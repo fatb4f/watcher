@@ -1,0 +1,36 @@
+{
+  "defaults": {
+    "debounce_seconds": 2.0,
+    "codex_on_fail": false,
+    "log_path": "~/.local/state/codex/watcher/watchctl-events.jsonl"
+  },
+  "profiles": {
+    "theme_sync": {
+      "commands": [
+        "./bin/noctalia-template-readd --mode apply",
+        "chezmoi apply --force --include=files"
+      ],
+      "codex_on_fail": false
+    },
+    "theme_sync_dry": {
+      "commands": [
+        "./bin/noctalia-template-readd --mode dry-run"
+      ],
+      "codex_on_fail": false
+    }
+  },
+  "routes": [
+    {
+      "match": { "topic": "noctalia.theme.applied" },
+      "profile": "theme_sync"
+    },
+    {
+      "match": { "topic": "noctalia.templates.applied" },
+      "profile": "theme_sync"
+    },
+    {
+      "match": { "topic_prefix": "noctalia.theme." },
+      "profile": "theme_sync_dry"
+    }
+  ]
+}

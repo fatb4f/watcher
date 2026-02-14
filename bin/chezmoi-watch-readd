@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""Watch managed dotfiles and run/propose `chezmoi re-add` in batches."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import select
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable
+
+sys.dont_write_bytecode = True
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def safe_mtime_ns(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
+def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def list_managed_files(prefixes: Iterable[str], home: Path) -> set[Path]:
+    managed: set[Path] = set()
+    for prefix in prefixes:
+        expanded = Path(prefix).expanduser()
+        target = expanded if expanded.is_absolute() else home / expanded
+        cp = run_cmd(["chezmoi", "managed", "-i", "files", str(target)])
+        if cp.returncode != 0:
+            print(cp.stderr.strip(), file=sys.stderr)
+            continue
+        for line in cp.stdout.splitlines():
+            rel = line.strip()
+            if not rel:
+                continue
+            path = Path(rel)
+            managed.add(path if path.is_absolute() else home / path)
+    return managed
+
+
+def append_event(log_path: Path, event: dict) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def execute_readd(mode: str, changed: list[Path]) -> tuple[str, int, str, str]:
+    cmd = ["chezmoi"]
+    if mode == "dry-run":
+        cmd.append("-n")
+    cmd.extend(["re-add"])
+    cmd.extend(str(path) for path in changed)
+
+    if mode == "print":
+        return ("proposed", 0, " ".join(cmd), "")
+
+    cp = run_cmd(cmd)
+    status = "applied" if cp.returncode == 0 and mode == "apply" else "dry-ran"
+    if cp.returncode != 0:
+        status = "error"
+    return (status, cp.returncode, cp.stdout.strip(), cp.stderr.strip())
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Watch managed files and batch chezmoi re-add actions."
+    )
+    parser.add_argument(
+        "--prefix",
+        action="append",
+        default=[".config"],
+        help="Prefix/path to watch (repeatable). Default: .config",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["print", "dry-run", "apply"],
+        default="dry-run",
+        help="print=proposal only, dry-run=chezmoi -n re-add, apply=chezmoi re-add",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "inotify", "poll"],
+        default="auto",
+        help="Event backend. auto prefers inotifywait.",
+    )
+    parser.add_argument(
+        "--debounce-secs",
+        type=float,
+        default=2.0,
+        help="Batch changes within this window. Default: 2.0",
+    )
+    parser.add_argument(
+        "--poll-secs",
+        type=float,
+        default=1.0,
+        help="Polling interval in seconds (poll backend). Default: 1.0",
+    )
+    parser.add_argument(
+        "--refresh-managed-secs",
+        type=float,
+        default=30.0,
+        help="Refresh managed file list interval in seconds. Default: 30.0",
+    )
+    parser.add_argument(
+        "--log-path",
+        default="~/.local/state/codex/chezmoi-watch-readd/events.jsonl",
+        help="JSONL event log path",
+    )
+    return parser.parse_args()
+
+
+def flush_pending(pending: set[Path], mode: str, log_path: Path) -> None:
+    changed = sorted(pending)
+    pending.clear()
+
+    status, code, out, err = execute_readd(mode, changed)
+    event = {
+        "event_id": str(uuid.uuid4()),
+        "topic": "dotfile.changed.batch",
+        "ts": now_iso(),
+        "mode": mode,
+        "status": status,
+        "return_code": code,
+        "count": len(changed),
+        "paths": [str(p) for p in changed],
+        "stdout": out,
+        "stderr": err,
+    }
+    append_event(log_path, event)
+
+    print(f"[{status}] {len(changed)} file(s)")
+    for path in changed:
+        print(f"  - {path}")
+    if err:
+        print(err, file=sys.stderr)
+
+
+def refresh_managed(prefixes: list[str], home: Path, mtimes: dict[Path, int | None]) -> set[Path]:
+    managed = list_managed_files(prefixes, home)
+    for path in managed:
+        mtimes.setdefault(path, safe_mtime_ns(path))
+    return managed
+
+
+def run_poll_loop(args: argparse.Namespace, home: Path, log_path: Path, managed: set[Path]) -> int:
+    mtimes = {path: safe_mtime_ns(path) for path in managed}
+    pending: set[Path] = set()
+    last_change_at: float | None = None
+    last_refresh = time.monotonic()
+
+    while True:
+        now = time.monotonic()
+
+        if now - last_refresh >= args.refresh_managed_secs:
+            managed = refresh_managed(args.prefix, home, mtimes)
+            last_refresh = now
+
+        for path in managed:
+            current = safe_mtime_ns(path)
+            previous = mtimes.get(path)
+            if current != previous:
+                mtimes[path] = current
+                pending.add(path)
+                last_change_at = now
+
+        if pending and last_change_at is not None and now - last_change_at >= args.debounce_secs:
+            flush_pending(pending, args.mode, log_path)
+            last_change_at = None
+
+        time.sleep(args.poll_secs)
+
+
+def start_inotify(dirs: list[Path]) -> subprocess.Popen[str]:
+    cmd = [
+        "inotifywait",
+        "--monitor",
+        "--recursive",
+        "--quiet",
+        "--event",
+        "close_write,move,create,delete",
+        "--format",
+        "%w%f",
+    ]
+    cmd.extend(str(d) for d in dirs)
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def run_inotify_loop(args: argparse.Namespace, home: Path, log_path: Path, managed: set[Path]) -> int:
+    watch_dirs = []
+    for prefix in args.prefix:
+        expanded = Path(prefix).expanduser()
+        target = expanded if expanded.is_absolute() else home / expanded
+        if target.exists():
+            watch_dirs.append(target)
+
+    if not watch_dirs:
+        print("No existing watch directories for inotify backend.", file=sys.stderr)
+        return 1
+
+    proc = start_inotify(watch_dirs)
+    if proc.stdout is None or proc.stderr is None:
+        print("Failed to start inotifywait.", file=sys.stderr)
+        return 1
+
+    mtimes = {path: safe_mtime_ns(path) for path in managed}
+    pending: set[Path] = set()
+    last_change_at: float | None = None
+    last_refresh = time.monotonic()
+
+    try:
+        while True:
+            now = time.monotonic()
+
+            if now - last_refresh >= args.refresh_managed_secs:
+                managed = refresh_managed(args.prefix, home, mtimes)
+                last_refresh = now
+
+            timeout = args.debounce_secs
+            readable, _, _ = select.select([proc.stdout], [], [], timeout)
+
+            if readable:
+                line = proc.stdout.readline().strip()
+                if line:
+                    changed_path = Path(line)
+                    if changed_path in managed:
+                        pending.add(changed_path)
+                        last_change_at = time.monotonic()
+            else:
+                if pending and last_change_at is not None:
+                    flush_pending(pending, args.mode, log_path)
+                    last_change_at = None
+
+            if proc.poll() is not None:
+                err = proc.stderr.read().strip()
+                print(f"inotifywait exited unexpectedly: {err}", file=sys.stderr)
+                return 1
+
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def main() -> int:
+    args = parse_args()
+    home = Path.home()
+    log_path = Path(args.log_path).expanduser()
+
+    managed = list_managed_files(args.prefix, home)
+    if not managed:
+        print("No managed files found under configured prefixes.", file=sys.stderr)
+        return 1
+
+    inotify_available = shutil.which("inotifywait") is not None
+    backend = args.backend
+    if backend == "auto":
+        backend = "inotify" if inotify_available else "poll"
+    if backend == "inotify" and not inotify_available:
+        print("inotifywait is not installed; falling back to poll backend.", file=sys.stderr)
+        backend = "poll"
+
+    print(
+        f"Watching {len(managed)} managed files "
+        f"(backend={backend}, mode={args.mode}, debounce={args.debounce_secs}s)..."
+    )
+
+    if backend == "inotify":
+        return run_inotify_loop(args, home, log_path, managed)
+    return run_poll_loop(args, home, log_path, managed)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

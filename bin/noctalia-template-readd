@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Re-add chezmoi files based on Noctalia active template IDs."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+# Map Noctalia template IDs to managed config prefixes.
+TEMPLATE_PREFIXES = {
+    "helix": [".config/helix"],
+    "hyprland": [".config/hypr"],
+    # Zellij uses kitty-match theme files, so treat it as part of kitty-driven updates.
+    "kitty": [".config/kitty", ".config/zellij"],
+    "noctalia": [".config/noctalia"],
+    "vscode": [".config/Code/User", ".config/VSCodium/User"],
+    "yazi": [".config/yazi"],
+    "zellij": [".config/zellij"],
+    "fuzzel": [".config/fuzzel"],
+    "gtk": [".config/gtk-3.0", ".config/gtk-4.0"],
+    "qt": [".config/qt6ct", ".config/qt5ct", ".config/Kvantum"],
+}
+
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def load_active_template_ids(settings_path: Path) -> list[str]:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    items = data.get("templates", {}).get("activeTemplates", [])
+    return [item["id"] for item in items if item.get("enabled") and item.get("id")]
+
+
+def collect_managed_files(prefixes: list[str]) -> list[str]:
+    files: list[str] = []
+    for prefix in prefixes:
+        target = str(Path.home() / prefix)
+        cp = run(["chezmoi", "managed", "-i", "files", target])
+        if cp.returncode != 0:
+            print(cp.stderr.strip(), file=sys.stderr)
+            continue
+        for line in cp.stdout.splitlines():
+            rel = line.strip()
+            if not rel:
+                continue
+            files.append(str(Path.home() / rel))
+    return sorted(set(files))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run chezmoi re-add for files implied by Noctalia active templates."
+    )
+    parser.add_argument(
+        "--settings",
+        default=str(Path.home() / "src/dotfiles/dot_config/noctalia/settings.json"),
+        help="Path to Noctalia settings.json",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["print", "dry-run", "apply"],
+        default="dry-run",
+        help="print=proposal, dry-run=chezmoi -n re-add, apply=chezmoi re-add",
+    )
+    args = parser.parse_args()
+
+    settings_path = Path(args.settings).expanduser()
+    if not settings_path.exists():
+        print(f"Missing settings file: {settings_path}", file=sys.stderr)
+        return 1
+
+    active_ids = load_active_template_ids(settings_path)
+    if not active_ids:
+        print("No enabled templates found.")
+        return 0
+
+    prefixes: list[str] = []
+    unknown_ids: list[str] = []
+    for template_id in active_ids:
+        if template_id not in TEMPLATE_PREFIXES:
+            unknown_ids.append(template_id)
+            continue
+        prefixes.extend(TEMPLATE_PREFIXES[template_id])
+
+    if unknown_ids:
+        print(f"Unmapped template IDs: {', '.join(sorted(unknown_ids))}", file=sys.stderr)
+
+    if not prefixes:
+        print("No mapped prefixes for active templates.")
+        return 0
+
+    files = collect_managed_files(sorted(set(prefixes)))
+    if not files:
+        print("No managed files found for active template prefixes.")
+        return 0
+
+    cmd = ["chezmoi"]
+    if args.mode == "dry-run":
+        cmd.append("-n")
+    cmd.append("re-add")
+    cmd.extend(files)
+
+    if args.mode == "print":
+        print(" ".join(cmd))
+        return 0
+
+    cp = run(cmd)
+    if cp.stdout.strip():
+        print(cp.stdout.strip())
+    if cp.stderr.strip():
+        print(cp.stderr.strip(), file=sys.stderr)
+    return cp.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

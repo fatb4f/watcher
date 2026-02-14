@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Event router for Noctalia/theme workflows.
+
+profiles.yaml is parsed as JSON (valid YAML subset) to avoid extra deps.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_PROFILES = ROOT_DIR / "config" / "profiles.yaml"
+
+
+@dataclass
+class Route:
+    profile: str
+    topic: str | None = None
+    topic_prefix: str | None = None
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"Invalid {path}. Use JSON content (valid YAML subset). Error: {exc}"
+        )
+    if not isinstance(data, dict):
+        raise SystemExit("Config root must be an object")
+    data.setdefault("defaults", {})
+    data.setdefault("profiles", {})
+    data.setdefault("routes", [])
+    return data
+
+
+def parse_routes(items: list[dict[str, Any]]) -> list[Route]:
+    routes: list[Route] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        profile = item.get("profile")
+        if not isinstance(profile, str) or not profile:
+            continue
+        match = item.get("match", {})
+        if not isinstance(match, dict):
+            match = {}
+        route = Route(
+            profile=profile,
+            topic=match.get("topic") if isinstance(match.get("topic"), str) else None,
+            topic_prefix=(
+                match.get("topic_prefix")
+                if isinstance(match.get("topic_prefix"), str)
+                else None
+            ),
+        )
+        routes.append(route)
+    return routes
+
+
+def append_log(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def run_shell(command: str) -> tuple[int, str, str]:
+    cp = subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(ROOT_DIR),
+    )
+    return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
+
+
+def maybe_run_codex(event: dict[str, Any], profile_name: str, reason: str) -> tuple[int, str, str]:
+    prompt = (
+        "Event-driven automation failed. Diagnose and propose minimal fix. "
+        f"profile={profile_name} reason={reason} event={json.dumps(event, sort_keys=True)}"
+    )
+    cmd = ["codex", "exec", prompt]
+    cp = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
+
+
+def execute_profile(
+    cfg: dict[str, Any],
+    profile_name: str,
+    event: dict[str, Any],
+    log_path: Path,
+) -> int:
+    profiles = cfg.get("profiles", {})
+    profile = profiles.get(profile_name)
+    if not isinstance(profile, dict):
+        print(f"Unknown profile: {profile_name}", file=sys.stderr)
+        return 1
+
+    commands = profile.get("commands", [])
+    if not isinstance(commands, list) or not commands:
+        print(f"Profile has no commands: {profile_name}", file=sys.stderr)
+        return 1
+
+    defaults = cfg.get("defaults", {})
+    codex_on_fail = bool(profile.get("codex_on_fail", defaults.get("codex_on_fail", False)))
+
+    for command in commands:
+        if not isinstance(command, str) or not command.strip():
+            continue
+        rc, out, err = run_shell(command)
+        row = {
+            "event_id": str(uuid.uuid4()),
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "profile": profile_name,
+            "command": command,
+            "return_code": rc,
+            "stdout": out,
+            "stderr": err,
+            "event": event,
+        }
+        append_log(log_path, row)
+
+        if rc != 0:
+            print(f"[fail] {profile_name}: {command}", file=sys.stderr)
+            if codex_on_fail:
+                crc, cout, cerr = maybe_run_codex(event, profile_name, err or out or f"rc={rc}")
+                append_log(
+                    log_path,
+                    {
+                        "event_id": str(uuid.uuid4()),
+                        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "profile": profile_name,
+                        "command": "codex exec <auto-diagnose>",
+                        "return_code": crc,
+                        "stdout": cout,
+                        "stderr": cerr,
+                        "event": event,
+                    },
+                )
+            return rc
+
+    print(f"[ok] profile={profile_name}")
+    return 0
+
+
+def match_profile(routes: list[Route], event: dict[str, Any]) -> str | None:
+    topic = event.get("topic")
+    if not isinstance(topic, str):
+        return None
+
+    for route in routes:
+        if route.topic is not None and topic == route.topic:
+            return route.profile
+        if route.topic_prefix is not None and topic.startswith(route.topic_prefix):
+            return route.profile
+    return None
+
+
+def read_events_from_command(command: str):
+    proc = subprocess.Popen(
+        shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if line:
+                yield line
+    finally:
+        proc.terminate()
+
+
+def iter_event_lines(args: argparse.Namespace):
+    if args.stdin_jsonl:
+        for line in sys.stdin:
+            line = line.strip()
+            if line:
+                yield line
+        return
+
+    if args.source_command:
+        yield from read_events_from_command(args.source_command)
+
+
+def cmd_run_profile(args: argparse.Namespace) -> int:
+    cfg = load_config(Path(args.profiles))
+    defaults = cfg.get("defaults", {})
+    log_path = Path(args.log_path or defaults.get("log_path", "~/.local/state/watcher/watchctl.jsonl")).expanduser()
+    event = {"topic": "manual.run_profile", "source": "watchctl", "profile": args.profile}
+    return execute_profile(cfg, args.profile, event, log_path)
+
+
+def cmd_handle_event(args: argparse.Namespace) -> int:
+    cfg = load_config(Path(args.profiles))
+    defaults = cfg.get("defaults", {})
+    log_path = Path(args.log_path or defaults.get("log_path", "~/.local/state/watcher/watchctl.jsonl")).expanduser()
+    routes = parse_routes(cfg.get("routes", []))
+
+    try:
+        event = json.loads(args.event)
+    except json.JSONDecodeError as exc:
+        print(f"Invalid event JSON: {exc}", file=sys.stderr)
+        return 1
+
+    profile = match_profile(routes, event)
+    if not profile:
+        print("[skip] no route matched")
+        return 0
+    return execute_profile(cfg, profile, event, log_path)
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    cfg = load_config(Path(args.profiles))
+    defaults = cfg.get("defaults", {})
+    log_path = Path(args.log_path or defaults.get("log_path", "~/.local/state/watcher/watchctl.jsonl")).expanduser()
+    debounce = float(defaults.get("debounce_seconds", 2.0))
+    routes = parse_routes(cfg.get("routes", []))
+
+    last_run: dict[str, float] = {}
+    print("watchctl daemon started")
+
+    for line in iter_event_lines(args):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            append_log(
+                log_path,
+                {
+                    "event_id": str(uuid.uuid4()),
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "profile": None,
+                    "command": None,
+                    "return_code": 1,
+                    "stdout": "",
+                    "stderr": "invalid event jsonl line",
+                    "event": {"raw": line},
+                },
+            )
+            continue
+
+        profile = match_profile(routes, event)
+        if not profile:
+            continue
+
+        now = time.monotonic()
+        topic = event.get("topic", "")
+        key = f"{profile}:{topic}"
+        if key in last_run and (now - last_run[key]) < debounce:
+            continue
+        last_run[key] = now
+
+        execute_profile(cfg, profile, event, log_path)
+
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Event-driven action router")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_daemon = sub.add_parser("daemon", help="Run daemon and consume event JSON lines")
+    p_daemon.add_argument("--profiles", default=str(DEFAULT_PROFILES))
+    p_daemon.add_argument("--log-path", default="")
+    p_daemon.add_argument("--stdin-jsonl", action="store_true", help="Read events from stdin")
+    p_daemon.add_argument("--source-command", default="", help="Command that emits JSONL events")
+    p_daemon.set_defaults(func=cmd_daemon)
+
+    p_event = sub.add_parser("handle-event", help="Handle a single event JSON")
+    p_event.add_argument("--profiles", default=str(DEFAULT_PROFILES))
+    p_event.add_argument("--log-path", default="")
+    p_event.add_argument("--event", required=True)
+    p_event.set_defaults(func=cmd_handle_event)
+
+    p_run = sub.add_parser("run-profile", help="Run a profile manually")
+    p_run.add_argument("profile")
+    p_run.add_argument("--profiles", default=str(DEFAULT_PROFILES))
+    p_run.add_argument("--log-path", default="")
+    p_run.set_defaults(func=cmd_run_profile)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
