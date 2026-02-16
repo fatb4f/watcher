@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+systemctl --user --no-pager --full status \
+  watchctl-codex-session-refresh.service \
+  watchctl-system-security-package.service || true
+echo
+journalctl --user \
+  -u watchctl-codex-session-refresh.service \
+  -u watchctl-system-security-package.service \
+  -n 120 --no-pager || true
+echo
+exec bash

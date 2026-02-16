@@ -55,6 +55,16 @@ Codex alert outputs:
 - `~/.local/state/codex/watcher/watchctl-events.jsonl`
 - `~/.local/state/codex/watcher/codex-alerts.jsonl`
 
+Ops pane helpers:
+- `bin/watchctl-control-dashboard`
+- `bin/watchctl-tail-events`
+- `bin/watchctl-tail-alerts`
+- `bin/watchctl-tail-system-security`
+- `bin/watchctl-systemd-status-pane`
+- `bin/watchctl-tail-journal`
+- `bin/watchctl-dome-oracle-status`
+- `bin/watchctl-opsctrl-dashboard`
+
 ## Event shape
 Minimal required field:
 ```json

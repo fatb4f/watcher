@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OPSCTRL_ROOT="${OPSCTRL_ROOT:-$HOME/src/opsctrl}"
+
+if [[ -x "$OPSCTRL_ROOT/bin/opsctrl-dashboard" ]]; then
+  exec "$OPSCTRL_ROOT/bin/opsctrl-dashboard"
+fi
+
+if [[ -x "$OPSCTRL_ROOT/bin/opsctrl" ]]; then
+  exec "$OPSCTRL_ROOT/bin/opsctrl"
+fi
+
+if [[ -f "$OPSCTRL_ROOT/main.py" ]] && command -v python >/dev/null 2>&1; then
+  exec python "$OPSCTRL_ROOT/main.py"
+fi
+
+printf "opsctrl not found at %s\n\n" "$OPSCTRL_ROOT"
+printf "Expected one of:\n"
+printf "  - %s/bin/opsctrl-dashboard\n" "$OPSCTRL_ROOT"
+printf "  - %s/bin/opsctrl\n" "$OPSCTRL_ROOT"
+printf "  - %s/main.py\n\n" "$OPSCTRL_ROOT"
+printf "Press Ctrl-C to exit.\n"
+while true; do
+  sleep 60
+done

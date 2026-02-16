@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec journalctl -f -o short-iso --no-pager \
+  | rg -i "pacman|alpm|keyring|sudo|security|denied|coredump|docker\\.service|oom|bootctl"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p "$HOME/.local/state/codex/watcher"
+touch "$HOME/.local/state/codex/watcher/watchctl-events.jsonl"
+exec tail -n 200 -F "$HOME/.local/state/codex/watcher/watchctl-events.jsonl"

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOME_ROOT="${DOME_ROOT:-$HOME/src/dome}"
+ORACLE_ROOT="${ORACLE_ROOT:-$HOME/src/oracle}"
+
+latest_run_file() {
+  local root="$1"
+  find "$root/ops/runtime/runs" -maxdepth 3 -type f -name "summary.json" 2>/dev/null \
+    | xargs -r ls -1t 2>/dev/null \
+    | head -n1
+}
+
+while true; do
+  clear
+  echo "dome+oracle control snapshot"
+  echo "ts: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo
+
+  echo "[dome]"
+  if [[ -d "$DOME_ROOT/.git" ]]; then
+    echo "repo: $DOME_ROOT"
+    echo "head: $(git -C "$DOME_ROOT" rev-parse --short HEAD 2>/dev/null || echo n/a)"
+    echo "status: $(git -C "$DOME_ROOT" status --short 2>/dev/null | wc -l | awk '{print $1}') changed paths"
+    run_file="$(latest_run_file "$DOME_ROOT" || true)"
+    if [[ -n "${run_file:-}" && -f "$run_file" ]]; then
+      echo "latest summary: $run_file"
+    else
+      echo "latest summary: none"
+    fi
+  else
+    echo "repo missing: $DOME_ROOT"
+  fi
+  echo
+
+  echo "[oracle]"
+  if [[ -d "$ORACLE_ROOT/.git" ]]; then
+    echo "repo: $ORACLE_ROOT"
+    echo "head: $(git -C "$ORACLE_ROOT" rev-parse --short HEAD 2>/dev/null || echo n/a)"
+    echo "status: $(git -C "$ORACLE_ROOT" status --short 2>/dev/null | wc -l | awk '{print $1}') changed paths"
+  else
+    echo "repo missing: $ORACLE_ROOT"
+  fi
+  echo
+
+  echo "[watcher services]"
+  systemctl --user --no-pager --full status \
+    watchctl-codex-session-refresh.service \
+    watchctl-system-security-package.service 2>/dev/null \
+    | sed -n '1,30p' || true
+
+  sleep 5
+done
