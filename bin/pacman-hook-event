@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+topic="${1:-package.txn.unknown}"
+shift || true
+detail="${*:-}"
+
+logger -t pacman-hook-event "topic=${topic} detail=${detail}"

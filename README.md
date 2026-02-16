@@ -39,6 +39,22 @@ Daemon from a source command (must emit one JSON event per line):
   --source-command '/path/to/noctalia-ipc-listener --jsonl'
 ```
 
+Codex session refresh daemon (updates effective prompt after session JSONL changes):
+```bash
+./bin/watchctl daemon \
+  --source-command "python ./bin/codex-event-source"
+```
+
+System package + security event daemon (pacman/journal high-signal topics):
+```bash
+./bin/watchctl daemon \
+  --source-command "python ./bin/system-security-package-event-source"
+```
+
+Codex alert outputs:
+- `~/.local/state/codex/watcher/watchctl-events.jsonl`
+- `~/.local/state/codex/watcher/codex-alerts.jsonl`
+
 ## Event shape
 Minimal required field:
 ```json

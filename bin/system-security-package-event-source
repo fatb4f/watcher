@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Emit high-signal package/security system events as JSONL."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+PACMAN_PREFIX = re.compile(r"^\[(?P<ts>[^\]]+)\]\s+\[(?P<section>[^\]]+)\]\s+(?P<msg>.*)$")
+PACMAN_ITEM = re.compile(r"^(installed|upgraded|reinstalled|removed)\s+([^\s]+)")
+
+
+@dataclass
+class PacmanState:
+    inode: int | None = None
+    offset: int = 0
+
+
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def emit(topic: str, payload: dict[str, Any]) -> None:
+    event = {"topic": topic, "source": "system-security-package-event-source", "ts": utc_now(), **payload}
+    print(json.dumps(event, sort_keys=True), flush=True)
+
+
+def init_journal_cursor() -> str | None:
+    cp = subprocess.run(
+        ["journalctl", "-n", "1", "-o", "json", "--no-pager"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if cp.returncode != 0:
+        return None
+    lines = [line for line in cp.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        row = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    return row.get("__CURSOR")
+
+
+def read_new_journal_rows(cursor: str | None) -> tuple[list[dict[str, Any]], str | None]:
+    cmd = ["journalctl", "-o", "json", "--no-pager"]
+    if cursor:
+        cmd.extend(["--after-cursor", cursor])
+    else:
+        cmd.extend(["-n", "0"])
+    cp = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if cp.returncode != 0:
+        return [], cursor
+    rows: list[dict[str, Any]] = []
+    next_cursor = cursor
+    for line in cp.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows.append(row)
+        cur = row.get("__CURSOR")
+        if isinstance(cur, str):
+            next_cursor = cur
+    return rows, next_cursor
+
+
+def emit_journal_event(row: dict[str, Any]) -> None:
+    message = str(row.get("MESSAGE", ""))
+    ident = str(row.get("SYSLOG_IDENTIFIER", ""))
+    unit = str(row.get("_SYSTEMD_UNIT", ""))
+    base = {"message": message, "identifier": ident, "unit": unit}
+
+    if ident == "pacman-hook-event" and "topic=" in message:
+        topic_match = re.search(r"\btopic=([a-zA-Z0-9._-]+)", message)
+        detail_match = re.search(r"\bdetail=(.*)$", message)
+        if topic_match:
+            emit(
+                topic_match.group(1),
+                {
+                    **base,
+                    "detail": detail_match.group(1).strip() if detail_match else "",
+                },
+            )
+    elif ident == "sudo" and "COMMAND=/usr/bin/pacman" in message:
+        emit("package.command.pacman", base)
+    elif "archlinux-keyring-wkd-sync.service: Failed with result 'exit-code'" in message:
+        emit("package.keyring.sync.failed", base)
+    elif ident == "archlinux-keyring-wkd-sync" and "Server indicated a failure" in message:
+        emit("package.keyring.sync.failed", base)
+    elif "A security policy denied" in message:
+        emit("security.policy.denied", base)
+    elif ident == "bootctl" and "security hole" in message:
+        emit("security.boot.random_seed.permissions", base)
+    elif ident == "systemd-coredump" and "dumped core" in message:
+        emit("security.process.coredump", base)
+    elif "Failed to start Docker Application Container Engine" in message:
+        emit("service.docker.start.failed", base)
+    elif "docker.service: Start request repeated too quickly" in message:
+        emit("service.docker.start.failed", base)
+    elif ident == "kernel" and "MMIO Stale Data CPU bug present" in message:
+        emit("security.kernel.vulnerability.notice", base)
+
+
+def read_new_pacman_lines(path: Path, state: PacmanState, backfill: bool) -> list[str]:
+    if not path.exists() or not path.is_file():
+        return []
+    st = path.stat()
+    inode = int(st.st_ino)
+    size = int(st.st_size)
+    if state.inode != inode:
+        state.inode = inode
+        state.offset = 0 if backfill else size
+    if state.offset > size:
+        state.offset = 0
+    if state.offset == size:
+        return []
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        f.seek(state.offset)
+        chunk = f.read()
+        state.offset = f.tell()
+    return [line.strip() for line in chunk.splitlines() if line.strip()]
+
+
+def emit_pacman_event(line: str) -> None:
+    m = PACMAN_PREFIX.match(line)
+    if not m:
+        return
+    section = m.group("section")
+    msg = m.group("msg")
+    base = {"section": section, "line": line}
+
+    if section == "ALPM" and msg == "transaction started":
+        emit("package.txn.started", base)
+    elif section == "ALPM" and msg == "transaction completed":
+        emit("package.txn.completed", base)
+    elif section == "ALPM" and "warning:" in msg and ".pacnew" in msg:
+        emit("package.pacnew.detected", base)
+    elif section == "ALPM-SCRIPTLET" and "==> WARNING:" in msg:
+        emit("package.scriptlet.warning", base)
+    elif section == "ALPM":
+        item = PACMAN_ITEM.match(msg)
+        if item:
+            emit(
+                "package.item.changed",
+                {"action": item.group(1), "package": item.group(2), "line": line},
+            )
+
+
+def main() -> int:
+    pacman_log = Path(os.environ.get("PACMAN_LOG_PATH", "/var/log/pacman.log"))
+    poll_seconds = float(os.environ.get("SYSTEM_EVENT_POLL_SECONDS", "1.0"))
+    backfill = os.environ.get("SYSTEM_EVENT_BACKFILL", "0") == "1"
+
+    pacman_state = PacmanState()
+    journal_cursor = init_journal_cursor()
+
+    while True:
+        for line in read_new_pacman_lines(pacman_log, pacman_state, backfill):
+            emit_pacman_event(line)
+
+        rows, journal_cursor = read_new_journal_rows(journal_cursor)
+        for row in rows:
+            emit_journal_event(row)
+
+        time.sleep(poll_seconds)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -17,6 +17,67 @@
         "./bin/noctalia-template-readd --mode dry-run"
       ],
       "codex_on_fail": false
+    },
+    "codex_context_refresh": {
+      "commands": [
+        "codex-refresh-context --wait-session-write"
+      ],
+      "codex_on_fail": false
+    },
+    "codex_config_validate": {
+      "commands": [
+        "./bin/codex-config-validate"
+      ],
+      "codex_on_fail": false
+    },
+    "codex_resume_diagnose": {
+      "commands": [
+        "./bin/codex-resume-diagnose",
+        "./bin/codex-alert-log --severity error --reason resume_failed"
+      ],
+      "codex_on_fail": false
+    },
+    "codex_meta_refresh_alert": {
+      "commands": [
+        "./bin/codex-alert-log --severity warn --reason meta_refresh_failed"
+      ],
+      "codex_on_fail": false
+    },
+    "codex_prompt_change_audit": {
+      "commands": [
+        "./bin/codex-alert-log --severity info --reason prompt_changed"
+      ],
+      "codex_on_fail": false
+    },
+    "codex_stall_alert": {
+      "commands": [
+        "./bin/codex-alert-log --severity warn --reason session_stalled"
+      ],
+      "codex_on_fail": false
+    },
+    "codex_service_restart_alert": {
+      "commands": [
+        "./bin/codex-alert-log --severity warn --reason watcher_service_restarted"
+      ],
+      "codex_on_fail": false
+    },
+    "package_event_index": {
+      "commands": [
+        "./bin/codex-alert-log --severity info --reason package_event"
+      ],
+      "codex_on_fail": false
+    },
+    "security_event_alert": {
+      "commands": [
+        "./bin/codex-alert-log --severity warn --reason security_event"
+      ],
+      "codex_on_fail": false
+    },
+    "docker_service_alert": {
+      "commands": [
+        "./bin/codex-alert-log --severity warn --reason docker_service_failed"
+      ],
+      "codex_on_fail": false
     }
   },
   "routes": [
@@ -31,6 +92,54 @@
     {
       "match": { "topic_prefix": "noctalia.theme." },
       "profile": "theme_sync_dry"
+    },
+    {
+      "match": { "topic": "codex.session.started" },
+      "profile": "codex_context_refresh"
+    },
+    {
+      "match": { "topic": "codex.session.ended" },
+      "profile": "codex_context_refresh"
+    },
+    {
+      "match": { "topic": "codex.config.changed" },
+      "profile": "codex_config_validate"
+    },
+    {
+      "match": { "topic": "codex.resume.failed" },
+      "profile": "codex_resume_diagnose"
+    },
+    {
+      "match": { "topic": "codex.meta.refresh.failed" },
+      "profile": "codex_meta_refresh_alert"
+    },
+    {
+      "match": { "topic": "codex.meta.prompt.changed" },
+      "profile": "codex_prompt_change_audit"
+    },
+    {
+      "match": { "topic": "codex.session.stalled" },
+      "profile": "codex_stall_alert"
+    },
+    {
+      "match": { "topic": "codex.watcher.service.restarted" },
+      "profile": "codex_service_restart_alert"
+    },
+    {
+      "match": { "topic": "package.keyring.sync.failed" },
+      "profile": "security_event_alert"
+    },
+    {
+      "match": { "topic_prefix": "package." },
+      "profile": "package_event_index"
+    },
+    {
+      "match": { "topic_prefix": "security." },
+      "profile": "security_event_alert"
+    },
+    {
+      "match": { "topic_prefix": "service.docker." },
+      "profile": "docker_service_alert"
     }
   ]
 }
