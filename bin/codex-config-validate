@@ -8,6 +8,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from _runtime_context import load_runtime_context
+
 
 def fail(msg: str) -> int:
     print(msg, file=sys.stderr)
@@ -15,8 +17,9 @@ def fail(msg: str) -> int:
 
 
 def main() -> int:
+    ctx = load_runtime_context()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="~/.config/codex/config.toml")
+    parser.add_argument("--config", default=str(ctx.codex_config_path))
     args = parser.parse_args()
 
     cfg_path = Path(args.config).expanduser()
@@ -38,7 +41,10 @@ def main() -> int:
     ).expanduser()
 
     for d in (history_dir, logs_dir, prompt_file.parent):
-        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            return fail(f"path not writable/accessible: {d} ({exc})")
         if not d.is_dir():
             return fail(f"not a directory: {d}")
 

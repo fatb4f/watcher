@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _runtime_context import load_runtime_context
+
 # Map Noctalia template IDs to managed config prefixes.
 TEMPLATE_PREFIXES = {
     "helix": [".config/helix"],
@@ -29,6 +31,18 @@ def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
+def resolve_default_settings_path() -> Path:
+    ctx = load_runtime_context()
+    candidates = [
+        ctx.noctalia_settings_target,
+        ctx.noctalia_settings_source_legacy,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def load_active_template_ids(settings_path: Path) -> list[str]:
     data = json.loads(settings_path.read_text(encoding="utf-8"))
     items = data.get("templates", {}).get("activeTemplates", [])
@@ -36,9 +50,10 @@ def load_active_template_ids(settings_path: Path) -> list[str]:
 
 
 def collect_managed_files(prefixes: list[str]) -> list[str]:
+    ctx = load_runtime_context()
     files: list[str] = []
     for prefix in prefixes:
-        target = str(Path.home() / prefix)
+        target = str(ctx.home / prefix)
         cp = run(["chezmoi", "managed", "-i", "files", target])
         if cp.returncode != 0:
             print(cp.stderr.strip(), file=sys.stderr)
@@ -47,7 +62,7 @@ def collect_managed_files(prefixes: list[str]) -> list[str]:
             rel = line.strip()
             if not rel:
                 continue
-            files.append(str(Path.home() / rel))
+            files.append(str(ctx.home / rel))
     return sorted(set(files))
 
 
@@ -57,7 +72,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--settings",
-        default=str(Path.home() / "src/dotfiles/dot_config/noctalia/settings.json"),
+        default=str(resolve_default_settings_path()),
         help="Path to Noctalia settings.json",
     )
     parser.add_argument(
