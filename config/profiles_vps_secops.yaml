@@ -1,0 +1,43 @@
+{
+  "defaults": {
+    "debounce_seconds": 15.0,
+    "codex_on_fail": false,
+    "log_path": "~/.local/state/codex/watcher/vps-secops-watchctl.jsonl"
+  },
+  "profiles": {
+    "vps_secops_health_warn": {
+      "commands": [
+        "${VPS_SECOPS_ROOT:-$HOME/src/vps_secops}/scripts/vps_watcher_initial_enrichment_sweep.sh"
+      ],
+      "codex_on_fail": false
+    },
+    "vps_secops_health_critical": {
+      "commands": [
+        "${VPS_SECOPS_ROOT:-$HOME/src/vps_secops}/scripts/vps_watcher_collect_full_pack.sh",
+        "${VPS_SECOPS_ROOT:-$HOME/src/vps_secops}/scripts/vps_watcher_initial_enrichment_sweep.sh",
+        "${VPS_SECOPS_ROOT:-$HOME/src/vps_secops}/scripts/vps_watcher_promote_incident.sh"
+      ],
+      "codex_on_fail": false
+    },
+    "vps_secops_health_missing": {
+      "commands": [
+        "${VPS_SECOPS_ROOT:-$HOME/src/vps_secops}/scripts/vps_watcher_initial_enrichment_sweep.sh"
+      ],
+      "codex_on_fail": false
+    }
+  },
+  "routes": [
+    {
+      "match": { "topic": "vps_secops.pipeline.coverage.low" },
+      "profile": "vps_secops_health_warn"
+    },
+    {
+      "match": { "topic": "vps_secops.pipeline.pack.stale" },
+      "profile": "vps_secops_health_critical"
+    },
+    {
+      "match": { "topic": "vps_secops.pipeline.report.missing" },
+      "profile": "vps_secops_health_missing"
+    }
+  ]
+}
