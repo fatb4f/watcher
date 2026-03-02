@@ -5,12 +5,6 @@
     "log_path": "~/.local/state/codex/watcher/watchctl-events.jsonl"
   },
   "profiles": {
-    "codex_context_refresh": {
-      "commands": [
-        "codex-refresh-context --wait-session-write"
-      ],
-      "codex_on_fail": false
-    },
     "codex_config_validate": {
       "commands": [
         "./bin/codex-config-validate"
@@ -50,14 +44,6 @@
     }
   },
   "routes": [
-    {
-      "match": { "topic": "codex.session.started" },
-      "profile": "codex_context_refresh"
-    },
-    {
-      "match": { "topic": "codex.session.ended" },
-      "profile": "codex_context_refresh"
-    },
     {
       "match": { "topic": "codex.config.changed" },
       "profile": "codex_config_validate"

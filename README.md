@@ -2,6 +2,9 @@
 
 Event router focused on Codex session/config signals.
 
+Scope note:
+- Session-memory refresh (`codex-refresh-context`) is out of scope here and belongs to `spawnd`.
+
 Naming update:
 - `meshctl` is the preferred operator entrypoint.
 - `watchctl` remains as a compatibility alias.
