@@ -104,6 +104,13 @@ def maybe_run_codex(event: dict[str, Any], profile_name: str, reason: str) -> tu
     return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
 
 
+def disabled_profiles() -> set[str]:
+    raw = os.environ.get("MESH_DISABLED_PROFILES", "")
+    if not raw:
+        return set()
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
 def execute_profile(
     cfg: dict[str, Any],
     profile_name: str,
@@ -115,6 +122,23 @@ def execute_profile(
     if not isinstance(profile, dict):
         print(f"Unknown profile: {profile_name}", file=sys.stderr)
         return 1
+
+    if profile_name in disabled_profiles():
+        append_log(
+            log_path,
+            {
+                "event_id": str(uuid.uuid4()),
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "profile": profile_name,
+                "command": None,
+                "return_code": 0,
+                "stdout": "",
+                "stderr": "profile disabled by MESH_DISABLED_PROFILES",
+                "event": event,
+            },
+        )
+        print(f"[skip] profile disabled: {profile_name}")
+        return 0
 
     commands = profile.get("commands", [])
     if not isinstance(commands, list) or not commands:
