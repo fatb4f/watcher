@@ -15,10 +15,7 @@ Architecture decision is locked in `docs/ARCHITECTURE.md` (MVP = local IPC + `wa
 - `bin/meshctl`: preferred daemon/router entrypoint
 - `bin/watchctl`: daemon/router
 - `config/profiles.yaml`: codex routes + profiles (JSON content, valid YAML subset)
-- `bin/codex-event-source`: emits codex events as JSONL
-- `bin/codex-config-validate`: validates codex paths/config
-- `bin/codex-resume-diagnose`: writes resume diagnostics
-- `bin/codex-alert-log`: appends codex alert JSONL rows
+- codex tooling moved to `spawn/bin/codex-*`
 
 ## Core flow
 `event -> route -> profile -> commands`

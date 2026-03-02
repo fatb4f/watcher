@@ -7,38 +7,38 @@
   "profiles": {
     "codex_config_validate": {
       "commands": [
-        "./bin/codex-config-validate"
+        "/home/_404/src/spawn/bin/codex-config-validate"
       ],
       "codex_on_fail": false
     },
     "codex_resume_diagnose": {
       "commands": [
-        "./bin/codex-resume-diagnose",
-        "./bin/codex-alert-log --severity error --reason resume_failed"
+        "/home/_404/src/spawn/bin/codex-resume-diagnose",
+        "/home/_404/src/spawn/bin/codex-alert-log --severity error --reason resume_failed"
       ],
       "codex_on_fail": false
     },
     "codex_meta_refresh_alert": {
       "commands": [
-        "./bin/codex-alert-log --severity warn --reason meta_refresh_failed"
+        "/home/_404/src/spawn/bin/codex-alert-log --severity warn --reason meta_refresh_failed"
       ],
       "codex_on_fail": false
     },
     "codex_prompt_change_audit": {
       "commands": [
-        "./bin/codex-alert-log --severity info --reason prompt_changed"
+        "/home/_404/src/spawn/bin/codex-alert-log --severity info --reason prompt_changed"
       ],
       "codex_on_fail": false
     },
     "codex_stall_alert": {
       "commands": [
-        "./bin/codex-alert-log --severity warn --reason session_stalled"
+        "/home/_404/src/spawn/bin/codex-alert-log --severity warn --reason session_stalled"
       ],
       "codex_on_fail": false
     },
     "codex_service_restart_alert": {
       "commands": [
-        "./bin/codex-alert-log --severity warn --reason watcher_service_restarted"
+        "/home/_404/src/spawn/bin/codex-alert-log --severity warn --reason watcher_service_restarted"
       ],
       "codex_on_fail": false
     }
