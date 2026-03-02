@@ -110,7 +110,7 @@ def main() -> int:
         item.strip()
         for item in os.environ.get(
             "WATCH_SERVICES",
-            "watchctl-codex-session-refresh.service",
+            "meshd-codex-session-refresh.service,watchctl-codex-session-refresh.service",
         ).split(",")
         if item.strip()
     ]
